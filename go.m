@@ -93,7 +93,8 @@ accuracy = mean(H==Dtest.labels);
 calibratedAccuracy = mean(calibH==Dtest.labels);
 
 %CALCULATE SKEW, z, EQ(27) IN THE PAPER.
-probYpos = sum(Dtest.labels==1)/length(Dtest.labels);
+%NOTE: PRIOR IS CALCULATED FROM TRAINING DATA
+probYpos = sum(Dtrain.labels==1)/length(Dtrain.labels);
 probYneg = 1-probYpos;
 z = (probYneg*cFP) / ((probYneg*cFP)+(probYpos*cFN)); 
 
@@ -101,12 +102,14 @@ z = (probYneg*cFP) / ((probYneg*cFP)+(probYpos*cFN));
 disp(['Cost of False Positive: ' num2str(cFP)]);
 disp(['Cost of False Negative: ' num2str(cFN)]);
 
-%PRINT THE CONFUSION MATRIX
-UncalibratedConfusionMatrix = confusionmat(H,Dtest.labels);
+
+
+%PRINT THE UNCALIBRATED CONFUSION MATRIX
 TP = sum(H==+1 & Dtest.labels==+1);
 TN = sum(H==-1 & Dtest.labels==-1);
 FP = sum(H==+1 & Dtest.labels==-1);
 FN = sum(H==-1 & Dtest.labels==+1);
+UncalibratedConfusionMatrix = [ TN FN; FP TP ];
 
 %CALCULATE THE [0,1] NORMALIZED COST, EQ (26)
 fpr = FP/(FP+TN); fnr = FN/(FN+TP);
@@ -117,14 +120,17 @@ disp(sprintf('\nUncalibrated cost = %f',UncalibratedCost));
 disp('Matrix  = ');
 disp(UncalibratedConfusionMatrix);
 
-%PRINT THE CONFUSION MATRIX AGAIN
-CalibratedConfusionMatrix = confusionmat(calibH,Dtest.labels);
+
+
+
+%PRINT THE CALIBRATED CONFUSION MATRIX
 TP = sum(calibH==+1 & Dtest.labels==+1);
 TN = sum(calibH==-1 & Dtest.labels==-1);
 FP = sum(calibH==+1 & Dtest.labels==-1);
 FN = sum(calibH==-1 & Dtest.labels==+1);
+CalibratedConfusionMatrix  = [ TN FN; FP TP ];
 
-%CALCULATE THE [0,1] NORMALIZED COST WHEN CALIBATED
+%CALCULATE THE [0,1] NORMALIZED COST WHEN CALIBRATED
 fpr = FP/(FP+TN); fnr = FN/(FN+TP);
 CalibratedCost = fpr*z + fnr*(1-z); %eq(26) from the paper
 
