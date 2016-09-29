@@ -1,4 +1,3 @@
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
 % This code provides a template implementation of the Calibrated-AdaMEC
@@ -18,97 +17,117 @@ clear all
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %LOAD and SHUFFLE THE DATA
 %
-load data/spliceM
+load data/krvskp
 labels(labels~=1) = -1;
 numExamples = length(labels);
 %
 % FIXED SEED FOR REPRODUCIBILITY DURING TESTING
-rng(123);
+r = randi(99999);
+rng(r);
+disp(['Random Seed: ' num2str(r)]);
 %
 randomOrder = randperm(numExamples);
 data = data(randomOrder,:);
 labels = labels(randomOrder);
 %
-% SPLIT IT UP INTO TRAIN/CALIBRATE/TEST SETS
-datasets = splitData([0.25 0.25 0.5], data, labels);
+% SPLIT IT UP INTO TRAIN/TEST SETS
+datasets = splitData([0.5 0.5], data, labels);
 Dtrain = datasets{1};
-Dcalib = datasets{2};
-Dtest = datasets{3};
+Dtest = datasets{2};
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%SET SIZE FOR BOTH ENSEMBLES
+%
+T=10;
+%SET COST OF FP/FN (NOTE: WITH AdaMEC, THIS CAN BE SET AT *TEST* TIME)
+cFP = 5;
+cFN = 1;
 
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %TRAIN A NORMAL ADABOOST ENSEMBLE
 %
-T=5; %ENSEMBLE SIZE
 model = adaboost(logreg, T); %USE LOGISTIC REGRESSIONS
 model = model.train(Dtrain.data, Dtrain.labels);
+%
+%CALCULATE VOTES ON TEST DATA
+uncalibPredictions = model.test(Dtest.data);
 
 
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%NOW TRAIN A CALIBRATED/SHIFTED ADABOOST ENSEMBLE
+%
+%FIRST SPLIT THE TRAIN DATA INTO MODEL FITTING/CALIBRATION SETS
+datasets = splitData([0.5 0.5], Dtrain.data, Dtrain.labels);
+Dfitting = datasets{1};
+Dcalib = datasets{2};
+%
+model = adaboost(logreg, T);
+model = model.train(Dfitting.data, Dfitting.labels);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %START THE CALIBRATION PROCESS
 %
+
 %CALCULATE VOTES ON CALIBRATION DATA
-[H votes] = model.test(Dcalib.data);
-
+[H calibvotes] = model.test(Dcalib.data);
 %CALCULATE SCORES
-scores = calculateScores(model.alpha, votes);
-
-%USE PLATT SCALING
+scores = calculateScores(model.alpha, calibvotes);
+%CALCULATE PLATT SCALING PARAMETERS FROM CALIBRATION DATA
 [A B] = plattScaling(scores, Dcalib.labels);
 
 
+%FINALLY, CALCULATE VOTES ON TEST DATA
+[H testvotes] = model.test(Dtest.data);
+%CALCULATE SCORES
+scores = calculateScores(model.alpha, testvotes);
+%APPLY PLATT SCALING PARAMETERS DERIVED FROM *CALIBRATION* DATA
+probs = 1 ./ ( 1+exp(A*scores + B) );
+%SET VOTE THRESHOLD
+threshold = cFP/(cFP+cFN);
+%APPLY MINIMUM EXPECTED COST (MEC) THRESHOLD
+calibPredictions(probs>threshold,1)   = +1;
+calibPredictions(probs<=threshold,1)  = -1;
+
+
+
+
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%NOW TEST
-%
-%CALCULATE VOTES ON TEST DATA
-[H testvotes] = model.test(Dtest.data);
-
-%CALCULATE SCORES
-scores = calculateScores(model.alpha, testvotes);
-
-%APPLY PLATT SCALING PARAMETERS DERIVED FROM TRAINING DATA
-probs = 1 ./ (1+exp(A*scores + B) );
-
-
-
-
-%COST OF FP/FN (NOTE: THIS CAN BE SET AT TEST TIME ONLY FOR AdaMEC)
-cFP = 5;
-cFN = 1;
-threshold = cFP/(cFP+cFN);
-%APPLY MINIMUM EXPECTED COST (MEC) THRESHOLD
-calibH(probs>threshold,1)   = +1;
-calibH(probs<=threshold,1)  = -1;
-
-
-
-
 %OUTPUT RESULTS!
-accuracy = mean(H==Dtest.labels);
-calibratedAccuracy = mean(calibH==Dtest.labels);
+accuracy = mean(uncalibPredictions==Dtest.labels);
+calibratedAccuracy = mean(calibPredictions==Dtest.labels);
+
+disp(sprintf('\nUncalibrated error = %f',1-accuracy));
+disp(sprintf('Calibrated error = %f\n',1-calibratedAccuracy));
+
+
 
 %CALCULATE SKEW, z, EQ(27) IN THE PAPER.
-%NOTE: PRIOR IS CALCULATED FROM TRAINING DATA
-probYpos = sum(Dtrain.labels==1)/length(Dtrain.labels);
+%NOTE: z IS CALCULATED FROM TESTING DATA
+%
+probYpos = sum(Dtest.labels==1)/length(Dtest.labels);
 probYneg = 1-probYpos;
 z = (probYneg*cFP) / ((probYneg*cFP)+(probYpos*cFN)); 
 
 %PRINT THE COSTS FOR INFORMATION
+disp(['Train p(y=1) = ' num2str(sum(Dtrain.labels==1)/length(Dtrain.labels))]);
+disp(['Test  p(y=1) = ' num2str(probYpos)]);
+disp(sprintf(' '));
 disp(['Cost of False Positive: ' num2str(cFP)]);
 disp(['Cost of False Negative: ' num2str(cFN)]);
 
 
 
 %PRINT THE UNCALIBRATED CONFUSION MATRIX
-TP = sum(H==+1 & Dtest.labels==+1);
-TN = sum(H==-1 & Dtest.labels==-1);
-FP = sum(H==+1 & Dtest.labels==-1);
-FN = sum(H==-1 & Dtest.labels==+1);
+TP = sum(uncalibPredictions==+1 & Dtest.labels==+1);
+TN = sum(uncalibPredictions==-1 & Dtest.labels==-1);
+FP = sum(uncalibPredictions==+1 & Dtest.labels==-1);
+FN = sum(uncalibPredictions==-1 & Dtest.labels==+1);
 UncalibratedConfusionMatrix = [ TN FN; FP TP ];
 
 %CALCULATE THE [0,1] NORMALIZED COST, EQ (26)
@@ -124,10 +143,10 @@ disp(UncalibratedConfusionMatrix);
 
 
 %PRINT THE CALIBRATED CONFUSION MATRIX
-TP = sum(calibH==+1 & Dtest.labels==+1);
-TN = sum(calibH==-1 & Dtest.labels==-1);
-FP = sum(calibH==+1 & Dtest.labels==-1);
-FN = sum(calibH==-1 & Dtest.labels==+1);
+TP = sum(calibPredictions==+1 & Dtest.labels==+1);
+TN = sum(calibPredictions==-1 & Dtest.labels==-1);
+FP = sum(calibPredictions==+1 & Dtest.labels==-1);
+FN = sum(calibPredictions==-1 & Dtest.labels==+1);
 CalibratedConfusionMatrix  = [ TN FN; FP TP ];
 
 %CALCULATE THE [0,1] NORMALIZED COST WHEN CALIBRATED
